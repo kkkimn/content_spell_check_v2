@@ -1,6 +1,6 @@
 streamlit
+python-pptx
 openai
-moviepy==1.0.3
 pandas
-opencv-python-headless
-numpy
+python-dotenv
+PyMuPDF
