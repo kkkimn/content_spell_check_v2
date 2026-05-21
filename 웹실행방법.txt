@@ -1,0 +1,12 @@
+cmd 실행 
+
+d:
+
+cd D:\테스트\2026 맞춤법 테스트\영상테스트
+
+python -m streamlit run app_video.py
+
+엔터
+
+-> 웹 실행 됨
+
