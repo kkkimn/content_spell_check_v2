@@ -43,6 +43,7 @@ if platform.system() != "Windows":
 
 import streamlit as st
 import pandas as pd
+from dotenv import load_dotenv
 from PIL import Image as PILImage
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -713,20 +714,28 @@ def render_result_cards(results, badge_type="audio"):
 
 
 # ─────────────────────────────────────────────
-# 사이드바 — API 키
+# API 키 설정 — .env / Streamlit Secrets 자동 로드
 # ─────────────────────────────────────────────
-# st.sidebar.header("⚙️ 설정")
+# 로컬 실행: .env 파일의 OPENAI_API_KEY 사용
+# Streamlit Cloud: Secrets의 OPENAI_API_KEY 사용 권장
+load_dotenv()
+
+api_key = os.getenv("OPENAI_API_KEY", "")
+
+# Streamlit Cloud Secrets가 있으면 우선 적용
 try:
-    api_key = st.secrets["OPENAI_API_KEY"]
+    secrets_key = st.secrets.get("OPENAI_API_KEY", "")
+    if secrets_key:
+        api_key = secrets_key
 except Exception:
-    api_key = ""
+    pass
 
 if not api_key:
-    st.sidebar.warning("아래에 OpenAI API 키를 직접 입력하세요.")
-    api_key = st.sidebar.text_input("OpenAI API Key", type="password", help="sk-... 형태의 키")
-    if not api_key:
-        st.info("👈 사이드바에서 OpenAI API 키를 입력하면 검사가 시작됩니다.")
-        st.stop()
+    st.error(
+        "OpenAI API 키가 설정되지 않았습니다. "
+        ".env 파일 또는 Streamlit Cloud Secrets에 OPENAI_API_KEY를 등록해주세요."
+    )
+    st.stop()
 
 # ─────────────────────────────────────────────
 # 상단 헤더 — Deploy 옆 로고
