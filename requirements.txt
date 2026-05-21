@@ -1,0 +1,6 @@
+streamlit
+openai
+moviepy==1.0.3
+pandas
+opencv-python-headless
+numpy
