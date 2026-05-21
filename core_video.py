@@ -56,8 +56,17 @@ import numpy as np
 from PIL import Image as PILImage
 from moviepy.editor import VideoFileClip
 from openai import OpenAI
-import win32com.client
-import pythoncom
+
+# Streamlit Cloud는 Linux 환경이라 Windows 전용 COM 모듈(win32com/pythoncom)을 사용할 수 없습니다.
+# 앱 시작 시 ModuleNotFoundError가 나지 않도록 Windows에서만 import합니다.
+try:
+    import win32com.client  # type: ignore
+    import pythoncom  # type: ignore
+except Exception:
+    win32com = None  # type: ignore
+    pythoncom = None  # type: ignore
+
+IS_WINDOWS_COM_AVAILABLE = win32com is not None and pythoncom is not None
 
 
 # ─────────────────────────────────────────────
@@ -2482,11 +2491,27 @@ def enrich_slide_metadata_with_ocr(
 
 
 def extract_ppt_slides(ppt_path, output_dir):
-    """PPT 파일을 JPG로 내보낸 후 base64로 인코딩한 이미지 리스트 반환"""
+    """PPT 파일을 JPG로 내보낸 후 base64로 인코딩한 이미지 리스트 반환.
+
+    Windows에서는 PowerPoint COM(win32com)으로 변환합니다.
+    Streamlit Cloud/Linux에서는 win32com을 사용할 수 없으므로 앱이 중단되지 않게
+    빈 리스트를 반환합니다. 이 경우 PPTX 텍스트 메타데이터 파싱(parse_pptx_metadata)은
+    python-pptx 기반으로 계속 사용할 수 있습니다.
+    """
     sb_images = []
+
+    if not IS_WINDOWS_COM_AVAILABLE:
+        print(
+            "PPT 이미지 추출 건너뜀: win32com/pythoncom은 Windows 전용입니다. "
+            "Streamlit Cloud에서는 PPT 이미지 변환 대신 python-pptx 텍스트 분석만 사용합니다."
+        )
+        return sb_images
+
     powerpoint = None
+    com_initialized = False
     try:
         pythoncom.CoInitialize()
+        com_initialized = True
         powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
         presentation = powerpoint.Presentations.Open(os.path.abspath(ppt_path), WithWindow=False)
         presentation.Export(os.path.abspath(output_dir), "JPG")
@@ -2505,9 +2530,13 @@ def extract_ppt_slides(ppt_path, output_dir):
         try:
             if powerpoint and powerpoint.Presentations.Count == 0:
                 powerpoint.Quit()
-        except:
+        except Exception:
             pass
-        pythoncom.CoUninitialize()
+        if com_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
     return sb_images
 
 

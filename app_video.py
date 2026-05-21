@@ -1,12 +1,45 @@
-﻿import os
+import os
 import re
 import io
 import base64
 import datetime
 import tempfile
 import threading
+import sys
+import types
+import platform
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
+# ─────────────────────────────────────────────
+# Streamlit Cloud/Linux 호환 처리
+# ─────────────────────────────────────────────
+# core_video.py 안에 Windows 전용 모듈(win32com.client)을 import하는 코드가 있으면
+# Streamlit Cloud(Linux)에서는 앱 시작 단계에서 ModuleNotFoundError가 발생합니다.
+# 영상 분석 기능은 win32com이 없어도 동작할 수 있으므로, 비-Windows 환경에서는
+# 더미 모듈을 먼저 등록해 core_video import 자체가 실패하지 않도록 합니다.
+if platform.system() != "Windows":
+    if "win32com" not in sys.modules:
+        win32com_stub = types.ModuleType("win32com")
+        client_stub = types.ModuleType("win32com.client")
+
+        def _dispatch_unavailable(*args, **kwargs):
+            raise RuntimeError(
+                "win32com.client는 Windows 전용 기능입니다. "
+                "Streamlit Cloud에서는 Office COM 자동화/PPT 변환 기능을 사용할 수 없습니다."
+            )
+
+        client_stub.Dispatch = _dispatch_unavailable
+        win32com_stub.client = client_stub
+        sys.modules["win32com"] = win32com_stub
+        sys.modules["win32com.client"] = client_stub
+
+    # 일부 Windows 자동화 코드가 pythoncom을 함께 import하는 경우를 대비합니다.
+    if "pythoncom" not in sys.modules:
+        pythoncom_stub = types.ModuleType("pythoncom")
+        pythoncom_stub.CoInitialize = lambda *args, **kwargs: None
+        pythoncom_stub.CoUninitialize = lambda *args, **kwargs: None
+        sys.modules["pythoncom"] = pythoncom_stub
 
 import streamlit as st
 import pandas as pd

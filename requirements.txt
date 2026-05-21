@@ -5,3 +5,5 @@ pandas
 opencv-python-headless
 numpy
 openpyxl
+pillow
+python-pptx
