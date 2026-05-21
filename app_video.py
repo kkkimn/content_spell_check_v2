@@ -1,10 +1,12 @@
-import os
+﻿import os
 import re
 import io
 import base64
 import datetime
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 import streamlit as st
 import pandas as pd
@@ -27,9 +29,9 @@ from core_video import (
 # ─────────────────────────────────────────────
 # 페이지 설정
 # ─────────────────────────────────────────────
-st.set_page_config(page_title="영상 맞춤법 검사기", page_icon="🎥", layout="wide")
+st.set_page_config(page_title="AI 품질관리 시스템(콘텐츠)", page_icon="🎥", layout="wide")
 
-st.title("🎥 영상 대본 및 화면 글자 자동 교정기")
+st.title("🎥 AI 품질관리 시스템(콘텐츠)")
 st.markdown(
     "MP4 영상을 업로드하면 AI가 **음성 대본(STT)** 및 **화면 속 텍스트(OCR)**를 분석하여 "
     "맞춤법·오타·띄어쓰기 오류를 잡아줍니다."
@@ -89,6 +91,124 @@ def _b64_to_xl_image(b64_str, thumb_w=240, thumb_h=135):
     pil.save(buf, format="JPEG", quality=85)
     buf.seek(0)
     return XLImage(buf)
+
+
+SCORE_AUDIO_WEIGHT = 1.0
+SCORE_SCREEN_WEIGHT = 1.4
+SCORE_CURVE_BASE = 55.0
+SCORE_MAX_DEDUCTION = 75.0
+
+
+def calculate_score(audio_results, screen_results):
+    """오류 건수가 많아도 급격히 0점으로 떨어지지 않는 완만한 품질 점수를 계산합니다."""
+    audio_count = len(audio_results or [])
+    screen_count = len(screen_results or [])
+    weighted_errors = audio_count * SCORE_AUDIO_WEIGHT + screen_count * SCORE_SCREEN_WEIGHT
+    deduction = SCORE_MAX_DEDUCTION * (weighted_errors / (weighted_errors + SCORE_CURVE_BASE)) if weighted_errors else 0
+    score = round(max(0, 100 - deduction))
+    if score >= 95:
+        grade = "우수"
+    elif score >= 85:
+        grade = "양호"
+    elif score >= 70:
+        grade = "주의"
+    else:
+        grade = "개선 필요"
+    return {
+        "score": score,
+        "grade": grade,
+        "audio_count": audio_count,
+        "screen_count": screen_count,
+        "total_count": audio_count + screen_count,
+        "deduction": round(deduction, 1),
+        "weighted_errors": round(weighted_errors, 1),
+    }
+
+
+def build_score_rows(all_video_results):
+    rows = []
+    for vr in all_video_results or []:
+        rows.append({
+            "video": vr.get("name") or vr.get("filename") or "-",
+            **calculate_score(vr.get("audio", []), vr.get("screen", [])),
+        })
+    return rows
+
+
+def average_score(score_rows):
+    if not score_rows:
+        return 100
+    return round(sum(r["score"] for r in score_rows) / len(score_rows), 1)
+
+
+def render_score_summary_card(score_rows):
+    if not score_rows:
+        return
+
+    overall_score = average_score(score_rows)
+    total_audio = sum(r["audio_count"] for r in score_rows)
+    total_screen = sum(r["screen_count"] for r in score_rows)
+    total_items = sum(r["total_count"] for r in score_rows)
+    grade = (
+        "우수" if overall_score >= 95 else
+        "양호" if overall_score >= 85 else
+        "주의" if overall_score >= 70 else
+        "개선 필요"
+    )
+    bar_width = max(0, min(100, overall_score))
+    score_display = f"{overall_score:g}"
+
+    st.markdown("### 🏅 문서 품질 점수")
+    st.markdown(
+        f"""
+        <div style="
+            background:linear-gradient(135deg,#161b2f 0%,#11182b 52%,#17243f 100%);
+            border:1px solid rgba(93,135,213,.25);
+            border-radius:10px;
+            box-shadow:0 12px 28px rgba(17,24,39,.22);
+            padding:22px 24px 20px;
+            margin:6px 0 18px;
+            color:#e8eefc;
+            font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;">
+            <div style="font-size:13px;font-weight:700;color:#dbe7ff;margin-bottom:14px;">
+                📊 문서 품질 점수 <span style="font-weight:500;color:#91a2c8;">(오류 건수 기반)</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:18px;margin-bottom:10px;">
+                <div style="min-width:92px;">
+                    <div style="font-size:44px;line-height:46px;font-weight:800;color:#34a8ff;white-space:nowrap;">{score_display}</div>
+                    <div style="font-size:12px;color:#8fa1c6;margin-top:2px;">/ 100점</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:-14px;">
+                    <span style="width:12px;height:12px;border-radius:50%;background:#2f9dff;display:inline-block;"></span>
+                    <span style="font-size:15px;font-weight:700;color:#dbeafe;">{grade}</span>
+                </div>
+            </div>
+            <div style="margin:0 0 18px 92px;">
+                <div style="height:9px;border-radius:999px;background:#263149;overflow:hidden;">
+                    <div style="width:{bar_width}%;height:100%;border-radius:999px;background:linear-gradient(90deg,#2f9dff,#38bdf8);"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:#66779d;margin-top:5px;">
+                    <span>0</span><span>50</span><span>100</span>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+                <div style="background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.08);border-radius:7px;padding:12px;text-align:center;">
+                    <div style="font-size:11px;color:#9fb0d2;margin-bottom:6px;">총 오류 수</div>
+                    <div style="font-size:19px;font-weight:800;color:#ffffff;">{total_items}건</div>
+                </div>
+                <div style="background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.08);border-radius:7px;padding:12px;text-align:center;">
+                    <div style="font-size:11px;color:#9fb0d2;margin-bottom:6px;">음성 대본</div>
+                    <div style="font-size:19px;font-weight:800;color:#ff6b6b;">{total_audio}건</div>
+                </div>
+                <div style="background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.08);border-radius:7px;padding:12px;text-align:center;">
+                    <div style="font-size:11px;color:#9fb0d2;margin-bottom:6px;">화면 텍스트</div>
+                    <div style="font-size:19px;font-weight:800;color:#f8c14a;">{total_screen}건</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def make_excel(audio_results, screen_results, reviewer, lesson_name, lesson_num, review_date=None):
@@ -179,7 +299,11 @@ def make_excel(audio_results, screen_results, reviewer, lesson_name, lesson_num,
 
         for i, r in enumerate(results):
             row_idx = 9 + i
-            gbn  = badge_label if badge_label else r.get("구분", "")
+            # ★ v3: 화면 시트에서는 각 행의 issue_type(좌측상단/STEP 로고/화면 텍스트/맞춤법)을 구분 값으로
+            if badge_label == "화면 텍스트":
+                gbn = r.get("_issue_type") or r.get("구분") or badge_label
+            else:
+                gbn = badge_label if badge_label else r.get("구분", "")
             fill = row_fill if i % 2 == 0 else white_fill
             vals = [
                 gbn,
@@ -259,7 +383,7 @@ def make_excel(audio_results, screen_results, reviewer, lesson_name, lesson_num,
 def make_excel_combined(all_video_results, reviewer, lesson_name, lesson_num, review_date=None):
     """
     여러 영상의 결과를 하나의 엑셀 파일로 통합합니다.
-    구조: [영상명_음성], [영상명_화면], ... + [전체통합] 시트
+    구조: [영상명_음성], [영상명_화면], ... + [📋 전체통합] 시트
     """
     wb = Workbook()
     first = True  # 첫 번째 시트는 active 시트 사용
@@ -356,7 +480,11 @@ def make_excel_combined(all_video_results, reviewer, lesson_name, lesson_num, re
         else:
             for i, r in enumerate(results):
                 row_idx = 10 + i
-                gbn  = badge_label if badge_label else r.get("구분", "")
+                # ★ v3: 화면 시트는 각 행의 issue_type(좌측상단/STEP 로고/화면 텍스트/맞춤법)을 구분 값으로
+                if badge_label == "화면 텍스트":
+                    gbn = r.get("_issue_type") or r.get("구분") or badge_label
+                else:
+                    gbn = badge_label if badge_label else r.get("구분", "")
                 fill = row_fill if i % 2 == 0 else white_fill
                 vals = [gbn, r.get("시간",""), strip_html(r.get("수정 전","")),
                         strip_html(r.get("수정 후","")), r.get("교정 사유","")]
@@ -512,14 +640,33 @@ def render_result_cards(results, badge_type="audio"):
     if not results:
         st.markdown('<div class="no-result">✅ 교정이 필요한 항목이 없습니다.</div>', unsafe_allow_html=True)
         return
-    badge_class = "badge-audio" if badge_type == "audio" else "badge-screen"
-    badge_label = "음성 대본" if badge_type == "audio" else "화면 텍스트"
+    # ★ v3: 화면 이슈는 issue_type별 세부 뱃지 표시
+    _issue_color = {
+        "좌측상단":    "#8b5cf6",   # 보라
+        "STEP 로고":   "#f97316",   # 주황
+        "화면 텍스트": "#22b07d",   # 초록
+        "맞춤법":     "#0ea5e9",   # 하늘
+    }
+    default_class = "badge-audio" if badge_type == "audio" else "badge-screen"
+    default_label = "음성 대본" if badge_type == "audio" else "화면 텍스트"
+
     for i, r in enumerate(results, 1):
         reason_html = f'<div class="reason-box">📌 {r.get("교정 사유","")}</div>' if r.get("교정 사유") else ""
+        # 세부 issue_type 우선 사용 (화면 이슈만 해당)
+        it = r.get("_issue_type") or r.get("구분") or default_label
+        if badge_type == "screen" and it in _issue_color:
+            color = _issue_color[it]
+            badge_html = (
+                f'<span style="background:{color};color:white;border-radius:5px;'
+                f'padding:2px 9px;font-size:12px;font-weight:bold;">{it}</span>'
+            )
+        else:
+            badge_html = f'<span class="{default_class}">{default_label}</span>'
+
         st.markdown(f"""
         <div class="card">
             <div class="card-header">
-                <span class="{badge_class}">{badge_label}</span>
+                {badge_html}
                 <span class="timestamp">{r.get("시간","")}</span>
                 <span style="margin-left:auto;color:#bbb;font-size:12px;">#{i}</span>
             </div>
@@ -599,6 +746,9 @@ st.sidebar.divider()
 st.sidebar.header("🎯 검사 대상")
 check_audio  = st.sidebar.checkbox("🎧 음성 대본 검사", value=True)
 check_screen = st.sidebar.checkbox("🖼️ 화면 텍스트 검사", value=True)
+check_sb = False
+use_vision_ocr_fallback = False
+force_content_slides = ""
 if not check_audio and not check_screen:
     st.warning("👈 검사 대상을 최소 하나 이상 체크해주세요.")
     st.stop()
@@ -628,8 +778,36 @@ selected_model = st.sidebar.radio(
 model_label = "GPT-5.4" if selected_model == "gpt-5.4" else "GPT-5.4 mini"
 
 with st.sidebar.expander("화면 프레임 설정", expanded=False):
-    sample_rate    = st.slider("프레임 추출 간격 (초)", 0.5, 5.0, 1.5, 0.5)
-    diff_threshold = st.slider("화면 변화 감지 임계값", 5.0, 50.0, 25.0, 5.0)
+    # ★ v4: 안정화 캡처 모드 ─ 기본 ON
+    stability_mode = st.checkbox(
+        "🎯 안정화 캡처 (애니메이션 종료 후만 캡처)",
+        value=True,
+        help="영상에 페이드인·도형 그리기·텍스트 등장 등의 모션이 있을 때, "
+             "애니메이션이 끝나고 화면이 안정된 시점에서만 프레임을 캡처합니다.",
+    )
+    if stability_mode:
+        stability_min_seconds = st.slider(
+            "안정 유지 최소 시간 (초)", 0.8, 4.0, 1.8, 0.2,
+            help="이 시간 이상 화면 변화가 없을 때 '안정 상태'로 판정. 길게 잡으면 정확도↑(누락 가능성 약간↑)."
+        )
+        stability_motion_threshold = st.slider(
+            "정지 판정 민감도 (낮을수록 엄격)", 0.5, 6.0, 1.5, 0.5,
+            help="인접 프레임의 평균 픽셀차가 이 값 미만이면 '움직임 없음'으로 판정. "
+                 "강사 미세 동작이나 3D 배경이 잡혀 캡처가 안 되면 살짝 키우세요."
+        )
+        stability_check_interval = st.slider(
+            "내부 샘플 간격 (초)", 0.2, 1.0, 0.35, 0.05,
+            help="안정성 추적용 내부 샘플링 간격. 작을수록 정밀하지만 느림."
+        )
+        # sample_rate / diff_threshold 는 호환용 (안정화 모드일 땐 사용 안 함)
+        sample_rate = 1.5
+        diff_threshold = 25.0
+    else:
+        stability_min_seconds = 1.8
+        stability_motion_threshold = 1.5
+        stability_check_interval = 0.35
+        sample_rate    = st.slider("프레임 추출 간격 (초)", 0.5, 5.0, 1.5, 0.5)
+        diff_threshold = st.slider("화면 변화 감지 임계값", 5.0, 50.0, 25.0, 5.0)
     # 정확도 우선: 기본 배치 2 (모델 집중도 ↑)
     batch_size     = st.selectbox("Vision API 배치 크기", [1, 2, 3, 4, 5], index=1,
                                    help="작을수록 정확도 ↑ (속도 ↓). 기본 2 권장.")
@@ -714,10 +892,12 @@ if reviewer or lesson_name or lesson_num:
 # ─────────────────────────────────────────────
 # 메인 — 파일 업로드 (다중 파일)
 # ─────────────────────────────────────────────
+st.markdown("### 🎥 동영상 업로드")
 uploaded_files = st.file_uploader(
     "검사할 동영상 파일(MP4)을 업로드하세요. (여러 개 동시 업로드 가능)",
     type=["mp4"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key="video_uploader"
 )
 
 if uploaded_files:
@@ -735,7 +915,26 @@ if uploaded_files:
                f"파이프라인 병렬: **{'ON' if parallel_pipelines else 'OFF'}**  ·  "
                f"🛡️ STT 캐시: **{'ON' if use_stt_cache else 'OFF'}**")
 
-    if st.button("🚀 맞춤법 검사 시작", type="primary", use_container_width=True):
+    # ── 결과 보존용 세션 상태 초기화 (한 번만) ─────────
+    for _k, _v in [
+        ("run_results", None),
+        ("run_meta", {}),
+    ]:
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+
+    run_clicked = st.button(
+        "🚀 맞춤법 검사 시작",
+        type="primary",
+        use_container_width=True,
+        key="btn_run_check",
+    )
+
+    if run_clicked:
+        # 새 검사 시작 → 이전 엑셀 캐시 무효화
+        for k in list(st.session_state.keys()):
+            if k.startswith("_excel_bytes") or k.startswith("_excel_combined_bytes"):
+                del st.session_state[k]
 
         import time as _time
         _t0 = _time.time()
@@ -748,6 +947,7 @@ if uploaded_files:
 
         # ── 1) 업로드 파일을 모두 고유 임시 디렉토리에 저장 ───
         work_dir = tempfile.mkdtemp(prefix="spellcheck_")
+        
         video_infos = []   # [{idx, name, filename, video_path, audio_path}]
         all_video_results = []   # try 바깥에서 미리 초기화 (예외 발생 시 NameError 방지)
         try:
@@ -766,6 +966,11 @@ if uploaded_files:
                         "audio_path": audio_path,
                     })
 
+            # 자연스러운 정렬 (01_01.mp4, 01_02.mp4 순서 보장)
+            def _nat_key(vi):
+                return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', vi["filename"])]
+            video_infos.sort(key=_nat_key)
+
             # ── 2) 진행 상태 UI ─────────────────────────
             overall_prog = st.progress(0.0, text=f"0 / {len(video_infos)}개 영상 처리 완료")
             status_area = st.empty()
@@ -779,9 +984,15 @@ if uploaded_files:
             _render_status()
 
             # ── 3) 단일 영상 처리 함수 (워커 스레드에서 실행) ───
-            def _process_one(vi):
+            ctx = get_script_run_ctx()
+
+            def _process_one(vi, start_sb=0):
+                if ctx and threading.current_thread().name != "MainThread":
+                    add_script_run_ctx(threading.current_thread(), ctx)
+                    
                 try:
                     status_dict[vi["idx"]] = "🔄 처리 중..."
+                    _render_status()
                     if parallel_pipelines:
                         out = run_pipeline_parallel(
                             video_path=vi["video_path"],
@@ -801,25 +1012,46 @@ if uploaded_files:
                             audio_max_workers=audio_workers,
                             stt_chunk_workers=stt_chunk_workers,
                             stt_cache_dir=stt_cache_dir,
+                            start_sb_idx=start_sb,
+                            verify_pass=False,
+                            slide_metadata=None,
+                            stability_mode=stability_mode,
+                            stability_motion_threshold=stability_motion_threshold,
+                            stability_min_seconds=stability_min_seconds,
+                            stability_check_interval=stability_check_interval,
                         )
                         audio_results  = out["audio"]
                         screen_results = out["screen"]
                         errors = out.get("errors", {})
                         stt_cached = out.get("stt_cached", False)
+                        last_sb = out.get("last_sb_idx", start_sb)
+                        slide_map = out.get("slide_map", [])
+                        slide_coverage = out.get("slide_coverage", {})
                     else:
                         audio_results, screen_results = [], []
                         errors = {}
                         stt_cached = False
+                        last_sb = start_sb
+                        slide_map = []
+                        slide_coverage = {}
                         if check_screen:
                             try:
                                 frames = extract_and_filter_frames(
-                                    vi["video_path"], sample_rate, diff_threshold)
+                                    vi["video_path"], sample_rate, diff_threshold,
+                                    stability_mode=stability_mode,
+                                    stability_motion_threshold=stability_motion_threshold,
+                                    stability_min_seconds=stability_min_seconds,
+                                    stability_check_interval=stability_check_interval,
+                                )
                                 if frames:
-                                    screen_results = spell_check_frames(
+                                    screen_results, slide_map, last_sb = spell_check_frames(
                                         frames, api_key,
                                         batch_size=batch_size,
                                         model=selected_model,
                                         max_workers=screen_workers,
+                                        start_sb_idx=start_sb,
+                                        verify_pass=False,
+                                        slide_metadata=None,
                                     )
                             except Exception as e:
                                 errors["screen"] = str(e)
@@ -864,6 +1096,9 @@ if uploaded_files:
                         "screen": screen_results,
                         "errors": errors,
                         "stt_cached": stt_cached,
+                        "last_sb_idx": last_sb,
+                        "slide_map": slide_map,
+                        "slide_coverage": slide_coverage,
                         "is_fatal": False,
                     }
                 except Exception as e:
@@ -876,15 +1111,21 @@ if uploaded_files:
                         "screen": [],
                         "errors": {"fatal": str(e)},
                         "stt_cached": False,
+                        "last_sb_idx": start_sb,
+                        "slide_map": [],
+                        "slide_coverage": {},
                         "is_fatal": True,
                     }
 
             # ── 4) 영상 간 병렬 실행 ──────────────────────
             results_by_idx = {}
             done_count = 0
-            if parallel_videos <= 1 or len(video_infos) == 1:
+            if parallel_videos <= 1 or len(video_infos) == 1 or check_sb:
+                cur_sb = 0
                 for vi in video_infos:
-                    results_by_idx[vi["idx"]] = _process_one(vi)
+                    res = _process_one(vi, cur_sb)
+                    results_by_idx[vi["idx"]] = res
+                    cur_sb = res.get("last_sb_idx", cur_sb)
                     done_count += 1
                     overall_prog.progress(
                         done_count / len(video_infos),
@@ -904,6 +1145,7 @@ if uploaded_files:
                                 "audio": [], "screen": [],
                                 "errors": {"fatal": str(e)},
                                 "stt_cached": False, "is_fatal": True,
+                                "slide_map": [], "slide_coverage": {},
                             }
                         done_count += 1
                         overall_prog.progress(
@@ -950,11 +1192,79 @@ if uploaded_files:
         if not all_video_results:
             st.stop()
 
+        # ★ 결과를 세션 상태에 보존 → 다운로드 클릭으로 rerun되어도 유지됨
+        st.session_state.run_results = all_video_results
+        st.session_state.run_meta = {
+            "reviewer":     reviewer,
+            "lesson_name":  lesson_name,
+            "lesson_num":   lesson_num,
+            "review_date":  review_date,
+            "check_audio":  check_audio,
+            "check_screen": check_screen,
+            "check_sb":     check_sb,
+        }
+
+        # ★ 결과 저장 완료 후 즉시 rerun → 이제부터 단일 렌더 경로(session_state 기반)만 사용
+        # (이렇게 하면 첫 표시와 다운로드 후 표시가 완전히 동일한 코드를 거치므로 변수 차이가 없음)
+        st.rerun()
+
+# ── 결과 렌더링 (검사 시작 블록 밖, 업로드 상태와 독립) ────
+# 다운로드 버튼을 눌러 rerun이 발생해도 session_state에 보존된 결과로 다시 그립니다.
+if st.session_state.get("run_results"):
+    all_video_results = st.session_state.run_results
+    _meta = st.session_state.run_meta
+    reviewer    = _meta.get("reviewer", "")
+    lesson_name = _meta.get("lesson_name", "")
+    lesson_num  = _meta.get("lesson_num", "")
+    review_date = _meta.get("review_date")
+    check_audio = _meta.get("check_audio", True)
+    check_screen = _meta.get("check_screen", True)
+    check_sb     = False
+
+    if True:
+
         # ── 전체 결과 출력 ────────────────────────────
         st.divider()
-        st.subheader("📋 교정 결과")
+
+        # 결과 헤더 + 리셋 버튼 (결과가 있을 때만 노출)
+        head_col1, head_col2 = st.columns([5, 1])
+        with head_col1:
+            st.subheader("📋 교정 결과")
+        with head_col2:
+            if st.button(
+                "🔄 결과 리셋",
+                use_container_width=True,
+                key="btn_reset_results",
+                help="현재 표시 중인 검사 결과를 화면에서 지웁니다. 업로드 파일은 유지됩니다.",
+            ):
+                st.session_state.run_results = None
+                st.session_state.run_meta = {}
+                for k in list(st.session_state.keys()):
+                    if k.startswith("_excel_bytes") or k.startswith("_excel_combined_bytes"):
+                        del st.session_state[k]
+                st.rerun()
 
         # 영상별 탭
+        score_rows = build_score_rows(all_video_results)
+        if score_rows:
+            render_score_summary_card(score_rows)
+            with st.expander("영상별 점수 보기", expanded=len(score_rows) <= 4):
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "영상명": r["video"],
+                            "점수": r["score"],
+                            "등급": r["grade"],
+                            "음성 오류": r["audio_count"],
+                            "화면 오류": r["screen_count"],
+                            "총 오류": r["total_count"],
+                        }
+                        for r in score_rows
+                    ]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
         video_tab_labels = [
             f"📹 {r['name']} ({len(r['audio'])+len(r['screen'])}건)"
             for r in all_video_results
@@ -965,12 +1275,16 @@ if uploaded_files:
             with v_tab:
                 audio_results  = vr["audio"]
                 screen_results = vr["screen"]
+                slide_map_data = []
+                coverage_data  = {}
+                score_info = calculate_score(audio_results, screen_results)
 
                 # 요약 지표
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 c1.metric("전체 교정 건수", f"{len(audio_results)+len(screen_results)}건")
                 c2.metric("🎧 음성 대본",   f"{len(audio_results)}건")
                 c3.metric("🖼️ 화면 텍스트", f"{len(screen_results)}건")
+                c4.metric("🧮 품질 점수", f"{score_info['score']}점", score_info["grade"])
                 st.markdown("")
 
                 # 음성/화면 탭
@@ -990,14 +1304,18 @@ if uploaded_files:
                     with inner_tabs[inner_idx]:
                         st.markdown("##### 화면 텍스트에서 발견된 맞춤법·오타 오류")
                         render_result_cards(screen_results, badge_type="screen")
+                    inner_idx += 1
 
-                # 엑셀 다운로드
-                if audio_results or screen_results:
+                # 엑셀 다운로드 — 캐시해서 rerun 시 재생성 비용 회피
+                if not vr.get("is_fatal"):
                     st.divider()
-                    excel_bytes = make_excel(
-                        audio_results, screen_results,
-                        reviewer, lesson_name, lesson_num, review_date
-                    )
+                    excel_cache_key = f"_excel_bytes_screen_score_only_v1::{vr['name']}"
+                    if excel_cache_key not in st.session_state:
+                        st.session_state[excel_cache_key] = make_excel(
+                            audio_results, screen_results,
+                            reviewer, lesson_name, lesson_num, review_date,
+                        )
+                    excel_bytes = st.session_state[excel_cache_key]
                     base = vr["name"]
                     fname = f"{lesson_num}차시_{base}_교정결과.xlsx" if lesson_name else f"{base}_교정결과.xlsx"
                     st.download_button(
@@ -1009,18 +1327,25 @@ if uploaded_files:
                         type="primary",
                         key=f"dl_{vr['name']}"
                     )
-                    st.info("💡 엑셀 파일에는 **음성 대본 / 화면 텍스트 / 통합** 시트가 포함됩니다.")
+                    sheet_desc = "음성 대본 / 화면 텍스트 / 통합"
+                    st.info(f"💡 엑셀 파일에는 **{sheet_desc}** 시트가 포함됩니다.")
 
         # ── 전체 통합 다운로드 (영상 2개 이상일 때만 표시) ──
         if len(all_video_results) >= 2:
             total_cnt = sum(len(vr["audio"]) + len(vr["screen"]) for vr in all_video_results)
-            if total_cnt > 0:
+            if score_rows:
                 st.divider()
                 st.markdown("### 📦 전체 통합 다운로드")
-                st.caption(f"총 {len(all_video_results)}개 영상 · {total_cnt}건 교정 항목을 하나의 엑셀 파일로 다운로드합니다.")
-                combined_bytes = make_excel_combined(
-                    all_video_results, reviewer, lesson_name, lesson_num, review_date
+                st.caption(
+                    f"총 {len(all_video_results)}개 영상 · {total_cnt}건 교정 항목"
+                    + " 을 하나의 엑셀 파일로 다운로드합니다."
                 )
+                combined_cache_key = "_excel_combined_bytes_screen_score_only_v1"
+                if combined_cache_key not in st.session_state:
+                    st.session_state[combined_cache_key] = make_excel_combined(
+                        all_video_results, reviewer, lesson_name, lesson_num, review_date,
+                    )
+                combined_bytes = st.session_state[combined_cache_key]
                 fname_combined = f"{lesson_name}_전체통합_교정결과.xlsx" if lesson_name else "전체통합_교정결과.xlsx"
                 st.download_button(
                     label="📥 전체 통합 엑셀 다운로드 (.xlsx)",
@@ -1031,4 +1356,7 @@ if uploaded_files:
                     type="primary",
                     key="dl_combined"
                 )
-                st.info("💡 통합 파일 구조: [영상명_음성] [영상명_화면] 시트 × 영상 수 + [📋 전체통합] 시트")
+                struct_desc = "[영상명_음성] [영상명_화면]"
+                struct_desc += " 시트 × 영상 수 + [📋 전체통합] 시트"
+                st.info(f"💡 통합 파일 구조: {struct_desc}")
+
