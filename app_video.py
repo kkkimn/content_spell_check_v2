@@ -853,23 +853,47 @@ else:
         except Exception:
             pass
 
-new_dict_name = st.sidebar.text_input("새 주요 용어 사전 이름", placeholder="예: IT 용어 사전")
+def _on_add_spelling_dict():
+    target_name = st.session_state.get("input_new_dict_name", "").strip()
+    dict_words_raw = st.session_state.get("input_new_dict_words", "")
+    if not target_name:
+        st.session_state["_sp_add_msg"] = ("error", "사전 이름을 입력해주세요.")
+        return
+
+    raw_w = dict_words_raw.replace('\n', ',').split(',')
+    w_list = [w.strip() for w in raw_w if w.strip()]
+
+    cur_dicts = {}
+    if os.path.exists(sp_dict_file_path):
+        try:
+            with open(sp_dict_file_path, "r", encoding="utf-8") as f:
+                cur_dicts = json.load(f)
+        except Exception:
+            pass
+    cur_dicts[target_name] = w_list
+    _save_all_spelling_dicts(cur_dicts)
+
+    st.session_state["input_new_dict_name"] = ""
+    st.session_state["input_new_dict_words"] = ""
+    st.session_state["_sp_add_msg"] = ("success", f"'{target_name}' 사전 등록 완료!")
+
+
+new_dict_name = st.sidebar.text_input("새 주요 용어 사전 이름", placeholder="예: IT 용어 사전", key="input_new_dict_name")
 new_dict_words = st.sidebar.text_area(
     "주요 용어·고유명사 단어 입력 (쉼표(,)나 줄바꿈으로 구분)",
     height=80,
-    placeholder="단어1\n단어2"
+    placeholder="단어1\n단어2",
+    key="input_new_dict_words"
 )
 
-if st.sidebar.button("➕ 주요 용어 사전 등록"):
-    target_name = new_dict_name.strip()
-    if not target_name:
-        st.sidebar.error("사전 이름을 입력해주세요.")
-    else:
-        raw_w = new_dict_words.replace('\n', ',').split(',')
-        w_list = [w.strip() for w in raw_w if w.strip()]
-        spelling_dicts[target_name] = w_list
-        _save_all_spelling_dicts(spelling_dicts)
-        st.sidebar.success(f"'{target_name}' 사전 등록 완료!")
+st.sidebar.button("➕ 주요 용어 사전 등록", on_click=_on_add_spelling_dict)
+
+if "_sp_add_msg" in st.session_state:
+    msg_type, msg_txt = st.session_state.pop("_sp_add_msg")
+    if msg_type == "error":
+        st.sidebar.error(msg_txt)
+    elif msg_type == "success":
+        st.sidebar.success(msg_txt)
         st.rerun()
 
 
