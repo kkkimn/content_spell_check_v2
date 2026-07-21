@@ -1578,15 +1578,15 @@ def narration_compare_segments(
 # ─────────────────────────────────────────────
 
 # 전역 품질 설정 (속도 모드에서 app 쪽에서 오버라이드 가능)
-_JPEG_QUALITY = 90           # 기존 95 → 90으로 낮춰도 OCR 정확도 영향 미미
-_OCR_MAX_SIDE = 1920         # FHD 유지 (작은 글자 위해 너무 줄이면 안 됨)
+_JPEG_QUALITY = 85           # 비용 최적화: 90 → 85 (품질 차이 미미, 토큰/용량 절감)
+_OCR_MAX_SIDE = 1280         # HD 해상도 압축 (FHD 1920 → HD 1280: Vision 토큰 약 47% 절감)
 
 
-def set_encode_quality(jpeg_quality: int = 90, max_side: int = 1920):
+def set_encode_quality(jpeg_quality: int = 85, max_side: int = 1280):
     """
     속도 조정용 전역 설정.
     - jpeg_quality: 낮을수록 업로드 용량↓ (권장 80~95)
-    - max_side   : 이미지 최대 변. 1920 미만으로 낮추면 작은 글자 판독 저하 주의.
+    - max_side   : 이미지 최대 변. 1280으로 압축하여 토큰 비용 감축.
     """
     global _JPEG_QUALITY, _OCR_MAX_SIDE
     _JPEG_QUALITY = max(60, min(100, int(jpeg_quality)))
@@ -1665,10 +1665,10 @@ def _focus_region(gray: np.ndarray) -> np.ndarray:
 def _extract_with_stability(
     video_path: str,
     check_interval: float = 0.35,
-    motion_threshold: float = 1.5,
+    motion_threshold: float = 2.5,
     min_stable_seconds: float = 1.8,
-    capture_min_gap: float = 1.5,
-    phash_threshold: int = 10,
+    capture_min_gap: float = 2.5,
+    phash_threshold: int = 12,
 ) -> List[dict]:
     """
     안정화 감지 기반 프레임 추출 — **모션 종료 프레임 우선** 버전.
@@ -1771,14 +1771,14 @@ def extract_and_filter_frames(
     video_path,
     sample_rate: float = 1.0,
     diff_threshold: float = 15.0,
-    phash_threshold: int = 10,
+    phash_threshold: int = 12,
     scene_change_threshold: float = 60.0,
     # ★ v4: 안정화(애니메이션 종료) 감지 모드 ─ 기본 ON
     stability_mode: bool = True,
     stability_check_interval: float = 0.35,  # 내부 샘플링 간격 (초) - 안정성 추적용
-    stability_motion_threshold: float = 1.5,  # 인접 샘플 간 평균픽셀차 ≤ 이면 "정지"
+    stability_motion_threshold: float = 2.5,  # 인접 샘플 간 평균픽셀차 ≤ 이면 "정지"
     stability_min_seconds: float = 1.8,       # 이 시간 이상 정지 지속 시 안정으로 판정
-    capture_min_gap: float = 1.5,             # 같은 장면 중복 캡처 방지: 마지막 캡처 후 최소 간격
+    capture_min_gap: float = 2.5,             # 같은 장면 중복 캡처 방지: 마지막 캡처 후 최소 간격
 ):
     """
     영상에서 sample_rate 간격으로 프레임을 추출하고
