@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import json
 import base64
 import datetime
 import tempfile
@@ -806,6 +807,111 @@ lesson_num  = st.sidebar.text_input("차시",    placeholder="예) 1")
 review_date = st.sidebar.date_input("검토일자", value=datetime.date.today())
 
 # ─────────────────────────────────────────────
+# 사이드바 — 영상의 주요 용어·고유명사 (도메인 힌트)
+# ─────────────────────────────────────────────
+st.sidebar.divider()
+st.sidebar.header(
+    "🎯 영상의 주요 용어·고유명사",
+    help="검사 시 전문용어·인명·고유명사의 오인식을 줄이고 과교정을 예방합니다."
+)
+
+sp_dict_file_path = "custom_spelling_dicts.json"
+spelling_dicts = {}
+
+
+def _save_all_spelling_dicts(dicts_to_save):
+    with open(sp_dict_file_path, "w", encoding="utf-8") as f:
+        json.dump(dicts_to_save, f, ensure_ascii=False, indent=2)
+    # 하위 호환성을 위해 모든 사전의 단어를 맞춤법사전.txt에 통합 저장
+    all_words = []
+    for words in dicts_to_save.values():
+        all_words.extend(words)
+    unique_words = sorted(list(set(all_words)))
+    with open("맞춤법사전.txt", "w", encoding="utf-8") as f:
+        f.write("\n".join(unique_words))
+
+
+# 데이터 로드 및 마이그레이션
+if os.path.exists(sp_dict_file_path):
+    with open(sp_dict_file_path, "r", encoding="utf-8") as f:
+        try:
+            spelling_dicts = json.load(f)
+        except Exception:
+            pass
+else:
+    # 기존 맞춤법사전.txt가 있으면 가져와서 '기본 사전'으로 마이그레이션
+    old_dict_path = "맞춤법사전.txt"
+    if os.path.exists(old_dict_path):
+        try:
+            with open(old_dict_path, "r", encoding="utf-8") as f:
+                old_text = f.read()
+            raw_words = old_text.replace('\n', ',').split(',')
+            words_list = [w.strip() for w in raw_words if w.strip()]
+            if words_list:
+                spelling_dicts["기본 사전"] = words_list
+                _save_all_spelling_dicts(spelling_dicts)
+        except Exception:
+            pass
+
+new_dict_name = st.sidebar.text_input("새 주요 용어 사전 이름", placeholder="예: IT 용어 사전")
+new_dict_words = st.sidebar.text_area(
+    "주요 용어·고유명사 단어 입력 (쉼표(,)나 줄바꿈으로 구분)",
+    height=80,
+    placeholder="단어1\n단어2"
+)
+
+if st.sidebar.button("➕ 주요 용어 사전 등록"):
+    target_name = new_dict_name.strip()
+    if not target_name:
+        st.sidebar.error("사전 이름을 입력해주세요.")
+    else:
+        raw_w = new_dict_words.replace('\n', ',').split(',')
+        w_list = [w.strip() for w in raw_w if w.strip()]
+        spelling_dicts[target_name] = w_list
+        _save_all_spelling_dicts(spelling_dicts)
+        st.sidebar.success(f"'{target_name}' 사전 등록 완료!")
+        st.rerun()
+
+
+if spelling_dicts:
+    with st.sidebar.expander("📖 등록된 주요 용어·고유명사 목록 보기", expanded=False):
+        for dn in list(spelling_dicts.keys()):
+            words_str = "\n".join(spelling_dicts[dn])
+            if st.session_state.get(f"edit_sp_mode_{dn}", False):
+                new_dn = st.text_input("새 사전 이름", value=dn, key=f"new_dn_{dn}", label_visibility="collapsed")
+                new_words_val = st.text_area("단어 편집", value=words_str, key=f"edit_words_{dn}", height=100)
+                col_s1, col_s2, col_s3 = st.columns([7.5, 1.2, 1.3], vertical_alignment="center")
+                with col_s2:
+                    if st.button("💾", key=f"save_sp_{dn}", help="저장", type="tertiary"):
+                        raw_w = new_words_val.replace('\n', ',').split(',')
+                        w_list = [w.strip() for w in raw_w if w.strip()]
+                        if new_dn and new_dn != dn:
+                            spelling_dicts.pop(dn)
+                            spelling_dicts[new_dn] = w_list
+                        else:
+                            spelling_dicts[dn] = w_list
+                        _save_all_spelling_dicts(spelling_dicts)
+                        st.session_state[f"edit_sp_mode_{dn}"] = False
+                        st.rerun()
+                with col_s3:
+                    if st.button("❌", key=f"cancel_sp_{dn}", help="취소", type="tertiary"):
+                        st.session_state[f"edit_sp_mode_{dn}"] = False
+                        st.rerun()
+            else:
+                col1, col2, col3 = st.columns([7.5, 1.2, 1.3], vertical_alignment="center")
+                with col1:
+                    st.caption(f"- {dn} ({len(spelling_dicts[dn])}개 단어)")
+                with col2:
+                    if st.button("✏️", key=f"edit_sp_{dn}", help=f"'{dn}' 이름 및 단어 수정", type="tertiary"):
+                        st.session_state[f"edit_sp_mode_{dn}"] = True
+                        st.rerun()
+                with col3:
+                    if st.button("🗑️", key=f"del_sp_{dn}", help=f"'{dn}' 사전 삭제", type="tertiary"):
+                        spelling_dicts.pop(dn)
+                        _save_all_spelling_dicts(spelling_dicts)
+                        st.rerun()
+
+# ─────────────────────────────────────────────
 # 사이드바 — 고급 설정
 # ─────────────────────────────────────────────
 st.sidebar.divider()
@@ -862,14 +968,6 @@ with st.sidebar.expander("음성 검사 설정", expanded=False):
                                            "문맥 오류(이중피동·어미 혼동) 검출률 향상")
     audio_batch_size   = st.slider("음성 교정 배치 크기", 10, 80, 40, 10,
                                     help="한 번에 검사할 문장 수. 작을수록 정확도 ↑")
-
-with st.sidebar.expander("🎯 도메인 힌트 (정확도 향상)", expanded=False):
-    domain_hint = st.text_area(
-        "영상의 주요 용어·고유명사",
-        placeholder="예) 파이썬 수업, 리스트 컴프리헨션, 재귀 함수, 객체지향",
-        help="Whisper STT에 힌트로 전달되어 고유명사·전문용어 오인식을 크게 줄입니다.",
-        height=80,
-    )
 
 with st.sidebar.expander("🚀 속도 설정", expanded=False):
     parallel_videos = st.slider(
@@ -934,6 +1032,17 @@ if reviewer or lesson_name or lesson_num:
 # ─────────────────────────────────────────────
 # 메인 — 파일 업로드 (다중 파일)
 # ─────────────────────────────────────────────
+sp_options = ["선택 안함"] + list(spelling_dicts.keys()) if spelling_dicts else ["선택 안함"]
+selected_sp_dict = st.selectbox(
+    "검사에 적용할 영상의 주요 용어·고유명사 (선택)",
+    options=sp_options
+)
+
+if selected_sp_dict != "선택 안함" and selected_sp_dict in spelling_dicts:
+    domain_hint = ", ".join(spelling_dicts[selected_sp_dict])
+else:
+    domain_hint = ""
+
 st.markdown("### 🎥 동영상 업로드")
 uploaded_files = st.file_uploader(
     "검사할 동영상 파일(MP4)을 업로드하세요. (여러 개 동시 업로드 가능)",
