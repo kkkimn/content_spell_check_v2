@@ -941,13 +941,9 @@ if spelling_dicts:
 st.sidebar.divider()
 st.sidebar.header("🔧 고급 설정")
 
-selected_model = st.sidebar.radio(
-    "🤖 AI 모델 선택",
-    options=["gpt-5.4", "gpt-5.4-mini"],
-    index=1,
-    help="gpt-5.4: 최고 정확도 / gpt-5.4-mini: 빠르고 저렴 (약 6배 저렴, 94% 성능)"
-)
-model_label = "GPT-5.4" if selected_model == "gpt-5.4" else "GPT-5.4 mini"
+selected_model = "gpt-5.6-sol"
+model_label = "GPT-5.6 sol"
+
 
 with st.sidebar.expander("화면 프레임 설정", expanded=False):
     # ★ v4: 안정화 캡처 모드 ─ 기본 ON

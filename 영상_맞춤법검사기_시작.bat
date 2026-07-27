@@ -17,11 +17,11 @@ if errorlevel 1 (
 )
 
 REM ── Streamlit 실행 ──────────────────────────────
-python -m streamlit run app_video.py
+python -m streamlit run app_video.py --server.maxUploadSize=1024
 if errorlevel 1 (
     echo.
     echo [오류] 실행 실패. 필수 패키지를 설치합니다...
     pip install streamlit openai moviepy opencv-python numpy pandas openpyxl pillow
-    python -m streamlit run app_video.py
+    python -m streamlit run app_video.py --server.maxUploadSize=1024
 )
 pause

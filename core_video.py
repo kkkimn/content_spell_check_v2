@@ -37,6 +37,33 @@ core_video.py — 정확도 + 속도 + 안정성 업그레이드 버전
 """
 
 import os
+
+from openai.resources.chat.completions import Completions
+
+# Store original create method
+_original_create = Completions.create
+
+def safe_create(self, *args, **kwargs):
+    """
+    OpenAI API 호출을 안전하게 감싸고, temperature 미지원 에러 발생 시
+    해당 인자를 제거하고 재시도합니다.
+    """
+    try:
+        return _original_create(self, *args, **kwargs)
+    except Exception as e:
+        msg = str(e)
+        if "temperature" in msg and ("support" in msg or "invalid" in msg or "unsupported" in msg) and "temperature" in kwargs:
+            kwargs.pop("temperature", None)
+            try:
+                return _original_create(self, *args, **kwargs)
+            except Exception as e2:
+                raise e2
+        raise e
+
+# Apply monkey-patch to handle temperature unsupported errors
+Completions.create = safe_create
+
+
 import re
 import io
 import json
@@ -1108,7 +1135,7 @@ def spell_check_segments(
     segments,
     api_key,
     context_window: int = 2,
-    model: str = "gpt-5.4",
+    model: str = "gpt-5.6-sol",
     use_sentence_merge: bool = True,
     batch_size: int = 40,
     max_workers: int = 3,
@@ -1413,7 +1440,7 @@ def narration_compare_segments(
     api_key: str,
     narration_texts: List[str],
     context_window: int = 2,
-    model: str = "gpt-5.4",
+    model: str = "gpt-5.6-sol",
     use_sentence_merge: bool = True,
     batch_size: int = 30,
     max_workers: int = 3,
@@ -2367,7 +2394,7 @@ _SLIDE_OCR_SCHEMA = {
 def vision_ocr_slide_center(
     sb_image_b64: str,
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-5.6-sol",
 ) -> List[str]:
     """
     스토리보드 슬라이드 이미지의 중앙 영역을 GPT Vision으로 OCR하여 텍스트 리스트 반환.
@@ -2417,7 +2444,7 @@ def enrich_slide_metadata_with_ocr(
     sb_images: List[str],
     api_key: str,
     *,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-5.6-sol",
     only_empty_center: bool = True,
     max_workers: int = 4,
     progress_cb=None,
@@ -3079,7 +3106,7 @@ _SB_MATCH_PROMPT = f"""당신은 영상 화면이 스토리보드 슬라이드�
 """
 
 def spell_check_frames(
-    frames, api_key, batch_size=2, model="gpt-5.4", max_workers: int = 4,
+    frames, api_key, batch_size=2, model="gpt-5.6-sol", max_workers: int = 4,
     storyboard_images: Optional[List[str]] = None,
     start_sb_idx: int = 0,
     verify_pass: bool = True,
@@ -3943,7 +3970,7 @@ def run_pipeline_parallel(
     screen_batch_size: int = 2,
     screen_max_workers: int = 4,
     # 음성 파이프라인 파라미터
-    model: str = "gpt-5.4",
+    model: str = "gpt-5.6-sol",
     domain_hint: str = "",
     context_window: int = 2,
     use_sentence_merge: bool = True,
